@@ -6,6 +6,15 @@ from tkinter import Tk, filedialog
 
 from PIL import Image
 
+try:
+    import pillow_jxl  # noqa: F401
+except Exception as exc:
+    jxlImportError = exc
+else:
+    jxlImportError = None
+
+SUPPORTED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".jxl"}
+
 
 def naturalSortKey(path: Path):
     parts = re.split(r"(\d+)", path.name.lower())
@@ -13,7 +22,18 @@ def naturalSortKey(path: Path):
 
 
 def isImageFile(path: Path):
-    return path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+    return path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS
+
+
+def requireImageSupport(imageFiles):
+    hasJxlFile = any(path.suffix.lower() == ".jxl" for path in imageFiles)
+    hasJxlSupport = ".jxl" in Image.registered_extensions()
+
+    if hasJxlFile and not hasJxlSupport:
+        raise RuntimeError(
+            "JPEG XL files require pillow-jxl-plugin. "
+            "Install it with: pip install pillow-jxl-plugin"
+        ) from jxlImportError
 
 
 root = Tk()
@@ -51,6 +71,8 @@ for cbzFile in cbzFiles:
 
             if not imageFiles:
                 raise ValueError("No supported image files found in archive")
+
+            requireImageSupport(imageFiles)
 
             pdfImages = []
 
