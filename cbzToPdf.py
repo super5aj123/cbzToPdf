@@ -4,7 +4,7 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
-from tkinter import Tk, filedialog
+from tkinter import Tk, filedialog, messagebox
 
 from PIL import Image
 
@@ -216,32 +216,85 @@ def convertCbzToPdf(cbzFile):
         raise
 
 
+def convertDirectory(directory):
+    cbzFiles = [
+        path for path in directory.iterdir()
+        if path.is_file() and path.suffix.lower() == ".cbz"
+    ]
+
+    convertedFiles = []
+    failedFiles = []
+
+    for cbzFile in cbzFiles:
+        try:
+            pdfFile = convertCbzToPdf(cbzFile)
+            convertedFiles.append(pdfFile)
+            print(f"Converted: {cbzFile.name} -> {pdfFile}")
+
+        except Exception as e:
+            failedFiles.append((cbzFile, e))
+            print(f"Failed on file {cbzFile}: {e}")
+
+    return cbzFiles, convertedFiles, failedFiles
+
+
+def showConversionSummary(directory, cbzFiles, convertedFiles, failedFiles):
+    if not cbzFiles:
+        messagebox.showwarning(
+            "No CBZ files found",
+            f"No .cbz files were found directly inside:\n{directory}",
+        )
+        return
+
+    if failedFiles:
+        details = "\n".join(
+            f"- {cbzFile.name}: {error}"
+            for cbzFile, error in failedFiles[:10]
+        )
+        extraFailures = len(failedFiles) - 10
+        if extraFailures > 0:
+            details = f"{details}\n- ...and {extraFailures} more"
+
+        messagebox.showwarning(
+            "CBZ conversion finished with errors",
+            (
+                f"Converted {len(convertedFiles)} of {len(cbzFiles)} file(s).\n\n"
+                f"PDFs were written next to their source CBZ files.\n\n"
+                f"Failures:\n{details}"
+            ),
+        )
+        return
+
+    outputList = "\n".join(str(pdfFile) for pdfFile in convertedFiles[:10])
+    extraOutputs = len(convertedFiles) - 10
+    if extraOutputs > 0:
+        outputList = f"{outputList}\n...and {extraOutputs} more"
+
+    messagebox.showinfo(
+        "CBZ conversion complete",
+        (
+            f"Converted {len(convertedFiles)} file(s).\n\n"
+            f"PDFs written:\n{outputList}"
+        ),
+    )
+
+
 def main():
     root = Tk()
     root.withdraw()
 
     try:
         directoryString = filedialog.askdirectory()
+
+        if not directoryString:
+            return
+
+        directory = Path(directoryString)
+        cbzFiles, convertedFiles, failedFiles = convertDirectory(directory)
+        showConversionSummary(directory, cbzFiles, convertedFiles, failedFiles)
+
     finally:
         root.destroy()
-
-    if not directoryString:
-        raise SystemExit("No directory selected.")
-
-    directory = Path(directoryString)
-
-    cbzFiles = [
-        path for path in directory.iterdir()
-        if path.is_file() and path.suffix.lower() == ".cbz"
-    ]
-
-    for cbzFile in cbzFiles:
-        try:
-            pdfFile = convertCbzToPdf(cbzFile)
-            print(f"Converted: {cbzFile.name} -> {pdfFile.name}")
-
-        except Exception as e:
-            print(f"Failed on file {cbzFile}: {e}")
 
 
 if __name__ == "__main__":
