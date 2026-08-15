@@ -36,23 +36,98 @@ jobs:
       - name: Install build dependencies
         run: python -m pip install pyinstaller pillow pillow-jxl-plugin
 
-      - name: Build one-file executable
+      - name: Import macOS signing certificate
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        shell: bash
+        run: |
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id-application.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/cbz-to-pdf-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+
+          printf '%s' "$MACOS_CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          SIGNING_IDENTITY="$(
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" |
+              awk -F '"' '/Developer ID Application/ { print $2; exit }'
+          )"
+          if [[ -z "$SIGNING_IDENTITY" ]]; then
+            echo "No Developer ID Application identity was found in the certificate." >&2
+            exit 1
+          fi
+
+          echo "MACOS_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+          rm -f "$CERTIFICATE_PATH"
+
+      - name: Build signed macOS one-file executable
+        if: runner.os == 'macOS'
+        shell: bash
+        run: >-
+          python -m PyInstaller
+          --clean
+          --noconfirm
+          --onefile
+          --name cbzToPdf
+          --collect-all pillow_jxl
+          --codesign-identity "$MACOS_SIGNING_IDENTITY"
+          cbzToPdf.py
+
+      - name: Build Windows one-file executable
+        if: runner.os == 'Windows'
         run: python -m PyInstaller --clean --noconfirm --onefile --name cbzToPdf --collect-all pillow_jxl cbzToPdf.py
 
       - name: Verify executable was created
         shell: bash
         run: test -f "${{ matrix.executable }}"
 
-      # A tar archive preserves the executable bit on macOS.
-      - name: Package macOS executable
+      - name: Verify macOS code signature
         if: runner.os == 'macOS'
-        run: tar -czf cbzToPdf-macos-arm64.tar.gz -C dist cbzToPdf
+        run: codesign --verify --deep --strict --verbose=2 dist/cbzToPdf
+
+      - name: Package macOS executable for notarization
+        if: runner.os == 'macOS'
+        run: ditto -c -k --keepParent dist/cbzToPdf cbzToPdf-macos-arm64.zip
+
+      - name: Notarize macOS executable
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        shell: bash
+        run: |
+          xcrun notarytool submit cbzToPdf-macos-arm64.zip \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait \
+            --output-format json > notarization-result.json
+
+          cat notarization-result.json
+          python3 -c 'import json; result = json.load(open("notarization-result.json")); assert result["status"] == "Accepted", result'
 
       - name: Upload macOS executable
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v7
         with:
-          path: cbzToPdf-macos-arm64.tar.gz
+          path: cbzToPdf-macos-arm64.zip
           archive: false
           if-no-files-found: error
 
@@ -75,7 +150,7 @@ jobs:
       - name: Download macOS executable
         uses: actions/download-artifact@v8
         with:
-          name: cbzToPdf-macos-arm64.tar.gz
+          name: cbzToPdf-macos-arm64.zip
           path: release-assets
 
       - name: Download Windows executable
@@ -90,8 +165,9 @@ jobs:
           RELEASE_TAG: build-${{ github.run_number }}
         run: >-
           gh release create "$RELEASE_TAG"
-          release-assets/cbzToPdf-macos-arm64.tar.gz
+          release-assets/cbzToPdf-macos-arm64.zip
           release-assets/cbzToPdf.exe
+          --repo "$GITHUB_REPOSITORY"
           --target "$GITHUB_SHA"
           --title "Build ${{ github.run_number }}"
           --generate-notes
