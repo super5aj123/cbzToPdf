@@ -19,7 +19,7 @@ jobs:
         include:
           - name: macOS (Apple Silicon)
             os: macos-latest
-            executable: dist/cbzToPdf
+            executable: dist/cbzToPdf.app
           - name: Windows (x64)
             os: windows-latest
             executable: dist/cbzToPdf.exe
@@ -34,7 +34,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install build dependencies
-        run: python -m pip install pyinstaller pillow pillow-jxl-plugin
+        run: python -m pip install "pyinstaller>=6.22,<7" pillow pillow-jxl-plugin
 
       - name: Import macOS signing certificate
         if: runner.os == 'macOS'
@@ -84,8 +84,11 @@ jobs:
           --clean
           --noconfirm
           --onefile
+          --windowed
           --name cbzToPdf
           --collect-all pillow_jxl
+          --osx-bundle-identifier com.super5aj123.cbztopdf
+          --osx-entitlements-file .github/macos-entitlements.plist
           --codesign-identity "$MACOS_SIGNING_IDENTITY"
           cbzToPdf.py
 
@@ -95,15 +98,36 @@ jobs:
 
       - name: Verify executable was created
         shell: bash
-        run: test -f "${{ matrix.executable }}"
+        run: test -e "${{ matrix.executable }}"
+
+      - name: Clean and re-sign macOS app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          xattr -cr dist/cbzToPdf.app
+          dot_clean -m dist/cbzToPdf.app || true
+          find dist/cbzToPdf.app -name '._*' -delete
+          find dist/cbzToPdf.app -name '.DS_Store' -delete
+
+          codesign \
+            --force \
+            --deep \
+            --sign "$MACOS_SIGNING_IDENTITY" \
+            --options runtime \
+            --timestamp \
+            --entitlements .github/macos-entitlements.plist \
+            dist/cbzToPdf.app
 
       - name: Verify macOS code signature
         if: runner.os == 'macOS'
-        run: codesign --verify --deep --strict --verbose=2 dist/cbzToPdf
+        shell: bash
+        run: |
+          codesign --verify --deep --strict --verbose=2 dist/cbzToPdf.app
+          codesign --display --verbose=4 dist/cbzToPdf.app
 
       - name: Package macOS executable for notarization
         if: runner.os == 'macOS'
-        run: ditto -c -k --keepParent dist/cbzToPdf cbzToPdf-macos-arm64.zip
+        run: ditto -c -k --sequesterRsrc --keepParent dist/cbzToPdf.app cbzToPdf-macos-arm64.zip
 
       - name: Notarize macOS executable
         if: runner.os == 'macOS'
@@ -122,6 +146,17 @@ jobs:
 
           cat notarization-result.json
           python3 -c 'import json; result = json.load(open("notarization-result.json")); assert result["status"] == "Accepted", result'
+
+      - name: Staple and validate macOS notarization
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          xcrun stapler staple -v dist/cbzToPdf.app
+          xcrun stapler validate -v dist/cbzToPdf.app
+          spctl --assess --type execute --verbose=4 dist/cbzToPdf.app
+
+          rm -f cbzToPdf-macos-arm64.zip
+          ditto -c -k --sequesterRsrc --keepParent dist/cbzToPdf.app cbzToPdf-macos-arm64.zip
 
       - name: Upload macOS executable
         if: runner.os == 'macOS'
@@ -152,6 +187,7 @@ jobs:
         with:
           name: cbzToPdf-macos-arm64.zip
           path: release-assets
+          skip-decompress: true
 
       - name: Download Windows executable
         uses: actions/download-artifact@v8
