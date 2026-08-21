@@ -219,7 +219,11 @@ def convertCbzToPdf(cbzFile):
 def convertDirectory(directory):
     cbzFiles = [
         path for path in directory.iterdir()
-        if path.is_file() and path.suffix.lower() == ".cbz"
+        if (
+            path.is_file()
+            and not path.name.startswith(".")
+            and path.suffix.lower() == ".cbz"
+        )
     ]
 
     convertedFiles = []
