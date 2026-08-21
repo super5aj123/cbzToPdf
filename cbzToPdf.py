@@ -1,6 +1,8 @@
 import io
+import os
 import re
 import shutil
+import stat
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -179,18 +181,24 @@ def convertImageEntry(pdfWriter, zipFile, imageEntry):
             pdfWriter.addImagePage(image)
 
 
+def copyCompletedPdf(sourceFile, destinationFile):
+    with sourceFile.open("rb") as source, destinationFile.open("wb") as destination:
+        shutil.copyfileobj(source, destination, length=1024 * 1024)
+
+    hiddenFlag = getattr(stat, "UF_HIDDEN", 0)
+    destinationFlags = getattr(destinationFile.stat(), "st_flags", 0)
+    if hiddenFlag and destinationFlags & hiddenFlag:
+        os.chflags(destinationFile, destinationFlags & ~hiddenFlag)
+
+
 def convertCbzToPdf(cbzFile):
     pdfFile = cbzFile.with_suffix(".pdf")
-    tempPdfFile = tempfile.NamedTemporaryFile(
-        dir=pdfFile.parent,
-        prefix=f".{pdfFile.stem}.",
-        suffix=".pdf",
-        delete=False,
-    )
-    tempPdfPath = Path(tempPdfFile.name)
-    tempPdfFile.close()
+    # Build the PDF on a local filesystem first. Some network filesystems do not
+    # reliably support creating hidden temporary files and atomically replacing
+    # them, which was the previous publication strategy.
+    with tempfile.TemporaryDirectory(prefix="cbzToPdf-") as tempDirectory:
+        tempPdfPath = Path(tempDirectory) / pdfFile.name
 
-    try:
         with zipfile.ZipFile(cbzFile, "r") as zipFile:
             imageEntries = sorted(
                 [
@@ -209,11 +217,8 @@ def convertCbzToPdf(cbzFile):
                 for imageEntry in imageEntries:
                     convertImageEntry(pdfWriter, zipFile, imageEntry)
 
-        tempPdfPath.replace(pdfFile)
+        copyCompletedPdf(tempPdfPath, pdfFile)
         return pdfFile
-    except Exception:
-        tempPdfPath.unlink(missing_ok=True)
-        raise
 
 
 def convertDirectory(directory):
